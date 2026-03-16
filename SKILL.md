@@ -1,6 +1,6 @@
 ---
 name: agent-browser-fetcher
-description: Fetch final rendered HTML through local `agent-browser-fetcher` (`uv run python -m app.fetch_html`) when plain HTTP/curl fails because of JS rendering, redirect loops, challenge, or antibot pages. Use for OpenClaw flows that require `--output-format openclaw`, saved HTML artifacts, and JSON-driven decisions by `status/result/artifacts`, in local mode or by attaching to runtime `127.0.0.1:9222`.
+description: Fetch final rendered HTML through local `agent-browser-fetcher` (`uv run python -m app.fetch_html`) when plain HTTP/curl fails because of JS rendering, redirect loops, challenge, or antibot pages. Use for OpenClaw flows that require `--output-format openclaw` and JSON-driven decisions by `status/result/artifacts`, with HTML returned either as saved artifact path or inline `html`, in local mode or by attaching to runtime `127.0.0.1:9222`.
 metadata:
   requires:
     - uv
@@ -19,7 +19,7 @@ Use this skill as a thin adapter over this repository only. Do not invent a new 
 - Use when direct HTTP client or `curl` cannot get usable final HTML.
 - Use when page behavior depends on real browser JS execution.
 - Use when there are redirect loops, challenge pages, or antibot interstitials.
-- Use when OpenClaw workflow needs JSON status plus HTML artifact path.
+- Use when OpenClaw workflow needs JSON status plus HTML artifact path or inline `html`.
 
 ## Do Not Use This Skill
 
@@ -61,13 +61,31 @@ scripts/openclaw_fetch.sh "$URL" "$HTML_PATH"
 - `result.blocked`
 - `result.challenge_detected`
 - `artifacts[]`
+- `html` (only if `--embed-html` is enabled)
 
 4. Treat as success only when:
 - `status == "success"`
 - `result.ok == true`
 - `result.blocked == false`
 - `result.challenge_detected == false`
-- HTML artifact exists on disk.
+- In file mode: HTML artifact exists on disk.
+- In inline mode: `html` field is non-empty.
+
+# In-Memory Mode (No File Write)
+
+Use only when caller explicitly requests no filesystem artifact.
+
+```bash
+uv run python -m app.fetch_html "$URL" \
+  --timeout 60 \
+  --output-format openclaw \
+  --embed-html \
+  --no-save-html
+```
+
+Expected output in this mode:
+- `artifacts` is empty.
+- `html` contains the rendered page.
 
 # Fallback Path (Attach to Existing Browser Runtime)
 
@@ -93,11 +111,12 @@ Use advanced flags incrementally, not upfront:
 # Safe Defaults
 
 - Always set `--output-format openclaw`.
-- Always set `--save-html` to a concrete path.
+- Prefer `--save-html` with a concrete path unless inline mode is explicitly requested.
 - Use timeout around `60` seconds for hard pages.
 - Keep `--embed-html` disabled by default.
 - Start without warmup/wait-selector/proxy/headful.
 - Write only the output HTML file; avoid any unrelated filesystem changes.
+- For no-file mode, set `--no-save-html` together with `--embed-html`.
 
 # Stdin JSON Mode
 
@@ -109,7 +128,8 @@ cat << 'JSON' | uv run python -m app.fetch_html --stdin-json
   "url": "https://example.com",
   "timeout": 60,
   "output_format": "openclaw",
-  "save_html": "/tmp/page.html"
+  "no_save_html": true,
+  "embed_html": true
 }
 JSON
 ```
@@ -120,7 +140,8 @@ JSON
 - Exit code `2`: blocked/challenge outcome; do not mark as success.
 - Exit code `1`: execution or fetch error.
 - If stdout is not valid JSON, treat as hard error.
-- If JSON says success but artifact file is missing, treat as error.
+- If JSON says success in file mode but artifact file is missing, treat as error.
+- If JSON says success in inline mode but `html` is empty, treat as error.
 - If page is empty or too small, retry once with `--wait-selector` and/or longer timeout.
 
 # Limitations

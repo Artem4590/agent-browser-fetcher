@@ -526,6 +526,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Формат вывода в stdout",
     )
     parser.add_argument("--embed-html", action="store_true", help="Встраивать HTML в JSON-ответ")
+    parser.add_argument(
+        "--no-save-html",
+        action="store_true",
+        help="Не сохранять HTML в файл (используйте вместе с --embed-html для inline-режима)",
+    )
     parser.add_argument("--verbose", action="store_true", help="Подробные debug-логи")
     return parser.parse_args(argv)
 
@@ -539,8 +544,11 @@ def _build_settings(args: argparse.Namespace) -> FetchSettings:
     if not url:
         raise ValueError("URL обязателен (аргумент или stdin JSON)")
 
-    save_html = data.get("save_html") or args.save_html
-    if not save_html:
+    no_save_html = bool(data.get("no_save_html", args.no_save_html))
+    save_html = data.get("save_html") if "save_html" in data else args.save_html
+    if no_save_html:
+        save_html = None
+    elif not save_html:
         stamp = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%SZ")
         safe_url = re.sub(r"[^a-zA-Z0-9]+", "-", url)[:64].strip("-") or "page"
         save_html = str((Path("output") / f"{stamp}-{safe_url}.html").resolve())

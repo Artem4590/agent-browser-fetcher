@@ -5,7 +5,7 @@
 ## Что решает
 
 - `curl -L` уходит в бесконечные редиректы (`?__rr=...`) на `docs.ozon.ru`.
-- Этот воркер открывает URL через браузерный runtime и сохраняет HTML страницы.
+- Этот воркер открывает URL через браузерный runtime, сохраняет HTML в файл или возвращает его inline в JSON.
 - Выводит структурированный JSON, удобный для агента OpenClaw.
 
 ## Стек
@@ -72,6 +72,15 @@ uv run python -m app.fetch_html "https://docs.ozon.ru/api/seller/en/" \
   --save-html /tmp/ozon.html
 ```
 
+### Вариант 1b: вернуть HTML сразу в JSON (без записи файла)
+
+```bash
+uv run python -m app.fetch_html "https://docs.ozon.ru/api/seller/en/" \
+  --output-format openclaw \
+  --embed-html \
+  --no-save-html
+```
+
 ### Вариант 2: shell-обертка
 
 ```bash
@@ -86,7 +95,8 @@ cat << 'JSON' | uv run python -m app.fetch_html --stdin-json
   "url": "https://docs.ozon.ru/api/seller/en/",
   "timeout": 60,
   "output_format": "openclaw",
-  "save_html": "/tmp/ozon.html",
+  "no_save_html": true,
+  "embed_html": true,
   "wait_selector": "main"
 }
 JSON
@@ -98,9 +108,8 @@ JSON
 {
   "status": "success|blocked|error",
   "message": "...",
-  "artifacts": [
-    { "type": "html", "path": "/abs/path/page.html" }
-  ],
+  "artifacts": [{ "type": "html", "path": "/abs/path/page.html" }],
+  "html": "<!doctype html>...",
   "result": {
     "ok": true,
     "blocked": false,
@@ -116,6 +125,8 @@ JSON
 }
 ```
 
+Если включить `--no-save-html`, массив `artifacts` будет пустым, а HTML вернётся в поле `html` только при `--embed-html`.
+
 ## Полезные флаги
 
 - `--wait-selector "main"` — успех, когда найден селектор (если страница SPA).
@@ -127,6 +138,7 @@ JSON
 - `--user-data-dir /path/to/profile` — reuse профиля/куки.
 - `--headful` — отключить headless.
 - `--embed-html` — встраивать HTML прямо в JSON (обычно не нужно).
+- `--no-save-html` — не записывать HTML в файл (для inline-режима с `--embed-html`).
 - `--browser-arg "--proxy-server=http://..."` — кастомный прокси.
 
 ## Ограничения
