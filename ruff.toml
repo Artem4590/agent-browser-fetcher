@@ -1,0 +1,14 @@
+line-length = 120
+target-version = "py312"
+src = ["app"]
+exclude = [
+    ".git",
+    ".ruff_cache",
+    ".venv",
+    "demos",
+    "output",
+]
+
+[lint]
+select = ["E", "F", "I", "B", "UP", "D"]
+ignore = ["D203", "D213"]

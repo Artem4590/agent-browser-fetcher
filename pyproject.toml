@@ -1,0 +1,17 @@
+[project]
+name = "agent-browser-fetcher"
+version = "0.1.0"
+description = "Lightweight HTML fetcher via Chromium and nodriver"
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "nodriver @ git+https://github.com/CusDeb-Solutions/nodriver@sync-latest-updates",
+]
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.6",
+]
