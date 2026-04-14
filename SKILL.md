@@ -1,81 +1,85 @@
 ---
 name: agent-browser-fetcher
-description: Fetch final rendered HTML through local `agent-browser-fetcher` (`uv run python -m app.fetch_html`) when plain HTTP/curl fails because of JS rendering, redirect loops, challenge, or antibot pages. Use for OpenClaw flows that require `--output-format openclaw` and JSON-driven decisions by `status/result/artifacts`, with HTML returned either as saved artifact path or inline `html`, in local mode or by attaching to runtime `127.0.0.1:9222`.
-metadata:
-  requires:
-    - uv
-    - python>=3.12,<3.14
-    - app/fetch_html.py
-    - scripts/openclaw_fetch.sh
-    - chromium runtime locally or reachable CDP runtime at 127.0.0.1:9222
+description: Fetch final rendered HTML through local Chromium (`uv run python -m app.fetch_html`) when plain HTTP/curl fails because of JavaScript rendering, redirect loops, geofencing, proxy requirements, or antibot interstitials. Use when OpenClaw needs saved HTML artifacts or inline HTML plus JSON status (`success|blocked|error`) for downstream decisions.
 ---
 
 # Scope
 
-Use this skill as a thin adapter over this repository only. Do not invent a new runtime.
+Use this skill as a thin adapter over this repository only.
 
 ## Use This Skill
 
 - Use when direct HTTP client or `curl` cannot get usable final HTML.
 - Use when page behavior depends on real browser JS execution.
-- Use when there are redirect loops, challenge pages, or antibot interstitials.
+- Use when the page is sensitive to IP geography or needs browser-level proxying.
 - Use when OpenClaw workflow needs JSON status plus HTML artifact path or inline `html`.
 
 ## Do Not Use This Skill
 
 - Do not use for simple static pages where `curl`/HTTP client already returns correct HTML.
 - Do not use as first step for every URL; keep it as fallback for hard pages.
-- Do not use for antibot bypass promises or guaranteed unlock flows.
+- Do not use for multi-step UI automation; use browser automation tools for that.
+- Do not promise antibot bypass.
 
-# Prereqs
+# Supported Model
 
-- Run from repository root: `agent-browser-fetcher/`.
-- `uv` must be available in `PATH`.
-- Python must satisfy `>=3.12,<3.14`.
-- Project dependencies must be installed (`uv sync` done before first run).
-- Output path for `--save-html` must be writable.
-- For attach mode, runtime must expose CDP at `127.0.0.1:9222`.
+This fetcher has one supported execution model:
+
+- start a local Chromium/Chrome process;
+- optionally pass a browser-level proxy;
+- open the URL;
+- wait for rendered HTML;
+- save HTML and/or return it inline in JSON.
+
+Attach-to-existing-browser and context-level proxy flows are intentionally out of scope.
 
 # Preferred Execution Path
 
-Always start with minimal safe command. Add extra flags only if needed.
-
-1. Local mode (first try):
+Start with the simplest working command.
 
 ```bash
+cd "{baseDir}"
 uv run python -m app.fetch_html "$URL" \
   --timeout 60 \
   --output-format openclaw \
   --save-html "$HTML_PATH"
 ```
 
-2. Optional shell wrapper (same local intent):
+If proxying is required, prefer browser-level proxying:
 
 ```bash
+cd "{baseDir}"
+uv run python -m app.fetch_html "$URL" \
+  --proxy-server "$PROXY_URL" \
+  --timeout 60 \
+  --output-format openclaw \
+  --save-html "$HTML_PATH"
+```
+
+Optional shell wrapper:
+
+```bash
+cd "{baseDir}"
 scripts/openclaw_fetch.sh "$URL" "$HTML_PATH"
 ```
 
-3. Read stdout JSON and decide from:
-- `status`
-- `result.ok`
-- `result.blocked`
-- `result.challenge_detected`
-- `artifacts[]`
-- `html` (only if `--embed-html` is enabled)
+# Useful Options
 
-4. Treat as success only when:
-- `status == "success"`
-- `result.ok == true`
-- `result.blocked == false`
-- `result.challenge_detected == false`
-- In file mode: HTML artifact exists on disk.
-- In inline mode: `html` field is non-empty.
+- `--browser-executable-path` — explicit Chromium/Chrome path.
+- `--user-data-dir` — separate browser profile.
+- `--proxy-server` — browser-level proxy, for example `socks5://user:pass@host:port`.
+- `--warmup-url` — warm-up navigation before target URL.
+- `--wait-selector` — treat page as ready when selector appears.
+- `--headful` — disable headless.
+- `--no-sandbox` — useful in some root/container environments.
+- `--browser-arg` — extra Chromium flag.
 
-# In-Memory Mode (No File Write)
+# Inline Mode
 
-Use only when caller explicitly requests no filesystem artifact.
+Use only when caller explicitly wants HTML in memory instead of a saved artifact.
 
 ```bash
+cd "{baseDir}"
 uv run python -m app.fetch_html "$URL" \
   --timeout 60 \
   --output-format openclaw \
@@ -87,105 +91,43 @@ Expected output in this mode:
 - `artifacts` is empty.
 - `html` contains the rendered page.
 
-# Fallback Path (Attach to Existing Browser Runtime)
+# Success Criteria
 
-Use when local start is unstable, slow, or blocked by local browser startup constraints.
+Treat the run as success only when:
 
-```bash
-uv run python -m app.fetch_html "$URL" \
-  --connect-host 127.0.0.1 \
-  --connect-port 9222 \
-  --timeout 60 \
-  --output-format openclaw \
-  --save-html "$HTML_PATH"
-```
-
-Use advanced flags incrementally, not upfront:
-
-- Add `--wait-selector "<selector>"` only when SPA content appears late.
-- Add `--warmup-url "<url>"` only when target navigation is unstable.
-- Add `--context-proxy-server "<proxy-or-list>"` only when network route requires proxy.
-- Add `--headful` only for debugging/visual inspection.
-- Keep `--no-context`, `--no-default-browser-flags`, `--browser-arg`, `--user-data-dir` for explicit troubleshooting cases only.
-
-# Safe Defaults
-
-- Always set `--output-format openclaw`.
-- Prefer `--save-html` with a concrete path unless inline mode is explicitly requested.
-- Use timeout around `60` seconds for hard pages.
-- Keep `--embed-html` disabled by default.
-- Start without warmup/wait-selector/proxy/headful.
-- Write only the output HTML file; avoid any unrelated filesystem changes.
-- For no-file mode, set `--no-save-html` together with `--embed-html`.
-
-# Stdin JSON Mode
-
-Use only when pipeline already builds JSON input.
-
-```bash
-cat << 'JSON' | uv run python -m app.fetch_html --stdin-json
-{
-  "url": "https://example.com",
-  "timeout": 60,
-  "output_format": "openclaw",
-  "no_save_html": true,
-  "embed_html": true
-}
-JSON
-```
+- `status == "success"`
+- `result.ok == true`
+- `result.blocked == false`
+- `result.challenge_detected == false`
+- in file mode: HTML artifact exists on disk
+- in inline mode: `html` is non-empty
 
 # Error Handling Contract
 
-- Exit code `0`: successful fetch path (`result.ok=true` expected).
-- Exit code `2`: blocked/challenge outcome; do not mark as success.
+- Exit code `0`: success.
+- Exit code `2`: blocked/challenge outcome.
 - Exit code `1`: execution or fetch error.
 - If stdout is not valid JSON, treat as hard error.
 - If JSON says success in file mode but artifact file is missing, treat as error.
 - If JSON says success in inline mode but `html` is empty, treat as error.
-- If page is empty or too small, retry once with `--wait-selector` and/or longer timeout.
+
+# Practical Guidance
+
+- Prefer file mode by default.
+- Add `--warmup-url` only when navigation is unstable.
+- Add `--wait-selector` only when SPA content appears late.
+- Prefer `--proxy-server` over custom low-level proxy hacks.
+- Keep `--embed-html` off unless the caller explicitly needs inline HTML.
 
 # Limitations
 
 - Real browser execution does not guarantee antibot bypass.
-- Response can still be challenge/blocked HTML.
-- Quality depends on IP reputation, proxy quality, and target defenses.
-- Runtime must have workable Chromium/CDP environment.
-
-# Troubleshooting
-
-## `uv not found`
-
-- Check: `command -v uv`.
-- If missing, stop and report unmet prerequisite; do not replace runtime with ad-hoc alternatives.
-
-## Browser runtime unavailable
-
-- For attach mode, check endpoint:
-  `curl -sS http://127.0.0.1:9222/json/version`.
-- If unreachable, start/fix browser runtime first or use local mode without `--connect-host/--connect-port`.
-
-## Challenge or blocked page returned
-
-- Do not report success.
-- Keep outcome as blocked/error using JSON status.
-- Retry with minimal targeted changes only: `--warmup-url`, then optional proxy.
-
-## HTML saved but page is empty / SPA not rendered
-
-- Add `--wait-selector "main"` (or specific app root selector).
-- Increase `--timeout` (for example to `90`) and keep `--save-html`.
-- Re-run without `--embed-html`; inspect saved artifact file directly.
-
-## Proxy does not work
-
-- Validate proxy format in `--context-proxy-server` (e.g. `http://host:port`).
-- Try one known-good proxy before passing a list.
-- If authenticated proxy is used, never print credentials in outputs.
+- A site can still return challenge/blocked HTML.
+- Success depends on IP reputation, proxy quality, and target defenses.
+- If an official API exists, prefer the API over rendered HTML.
 
 # Safety Notes
 
-- Never promise antibot bypass.
-- Never claim success when JSON reports blocked/challenge/error.
-- Do not embed full HTML into JSON unless explicitly needed.
-- Do not leak secrets, tokens, cookies, or proxy credentials in agent responses.
+- Never leak secrets, tokens, cookies, or proxy credentials in responses.
+- Keep proxy configuration outside the repository when possible.
 - Keep behavior non-destructive: fetch page, write artifact, report JSON result.

@@ -1,4 +1,4 @@
-"""Получение отрендеренного HTML через nodriver с метаданными результата."""
+"""Получение отрендеренного HTML через локальный Chromium + nodriver."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import contextlib
 import io
 import json
 import logging
-import random
 import re
 import sys
 import time
@@ -139,10 +138,7 @@ class FetchSettings:
     sandbox: bool
     browser_executable_path: str | None
     user_data_dir: str | None
-    connect_host: str | None
-    connect_port: int | None
-    use_context: bool
-    context_proxy_server: str | None
+    proxy_server: str | None
     use_default_browser_flags: bool
     browser_args: list[str]
     save_html: str | None
@@ -194,13 +190,15 @@ def _merge_browser_args(*arg_lists: tuple[str, ...] | list[str]) -> list[str]:
     return merged
 
 
-def _select_context_proxy(proxy_value: str | None) -> str:
-    if not proxy_value:
-        return ""
-    candidates = [item.strip() for item in proxy_value.split(",") if item.strip()]
-    if not candidates:
-        return ""
-    return random.choice(candidates or [""])
+def _build_browser_args(settings: FetchSettings) -> list[str]:
+    browser_args = list(settings.browser_args)
+    if settings.use_default_browser_flags:
+        browser_args = _merge_browser_args(list(DEFAULT_BROWSER_ARGS), browser_args)
+    if settings.proxy_server and not any(arg.startswith("--proxy-server=") for arg in browser_args):
+        browser_args.append(f"--proxy-server={settings.proxy_server}")
+    if settings.headless and not any(arg.startswith("--headless") for arg in browser_args):
+        browser_args.append("--headless=new")
+    return browser_args
 
 
 def _to_openclaw_payload(result: FetchResult, html: str | None) -> dict[str, Any]:
@@ -227,21 +225,19 @@ def _to_openclaw_payload(result: FetchResult, html: str | None) -> dict[str, Any
 
 
 def _visible_text_len(html: str) -> int:
-    # Сначала удаляем script/style, затем теги, чтобы оценить реальный объем текста.
     without_code = SCRIPT_STYLE_RE.sub(" ", html)
     text = HTML_TAG_RE.sub(" ", without_code)
     return len(" ".join(text.split()))
 
 
 async def fetch_html(settings: FetchSettings) -> tuple[FetchResult, str]:
-    """Получает HTML страницы через nodriver и возвращает HTML с метаданными."""
+    """Получает HTML страницы через локальный Chromium и возвращает HTML с метаданными."""
     started = time.time()
     started_mono = time.monotonic()
     redirect_hops: list[RedirectHop] = []
     responses: list[ResponseRecord] = []
 
     browser = None
-    context_tab = None
     html = ""
     final_url = settings.url
     challenge_detected = False
@@ -249,33 +245,16 @@ async def fetch_html(settings: FetchSettings) -> tuple[FetchResult, str]:
     rr_seen = False
 
     try:
-        # В форке nodriver есть рекурсия при headless=True.
-        # Поэтому nodriver запускаем не в headless, а режим headless включаем аргументом Chromium.
-        browser_args = list(settings.browser_args)
-        if settings.use_default_browser_flags and not settings.connect_host:
-            browser_args = _merge_browser_args(list(DEFAULT_BROWSER_ARGS), browser_args)
-        if settings.headless and not any(arg.startswith("--headless") for arg in browser_args):
-            browser_args.append("--headless=new")
-
         browser = await uc.start(
             headless=False,
             sandbox=settings.sandbox,
             browser_executable_path=settings.browser_executable_path,
             user_data_dir=settings.user_data_dir,
-            host=settings.connect_host,
-            port=settings.connect_port,
-            browser_args=browser_args,
+            browser_args=_build_browser_args(settings),
         )
         LOGGER.debug("stage=connect elapsed_ms=%d", int((time.monotonic() - started_mono) * 1000))
 
-        if settings.use_context:
-            context_proxy = _select_context_proxy(settings.context_proxy_server)
-            context_kwargs: dict[str, Any] = {"proxy_server": context_proxy}
-            context_tab = await browser.create_context(**context_kwargs)
-            tab = context_tab
-        else:
-            tab = browser.main_tab
-        LOGGER.debug("stage=context elapsed_ms=%d", int((time.monotonic() - started_mono) * 1000))
+        tab = browser.main_tab
 
         if settings.warmup_url:
             try:
@@ -373,23 +352,15 @@ async def fetch_html(settings: FetchSettings) -> tuple[FetchResult, str]:
                 has_closed_html = "</html" in html.lower()
                 text_len = _visible_text_len(html)
                 small_page_ready = (
-                    has_closed_html
-                    and stable_html_polls >= 1
-                    and text_len >= MIN_TEXT_CHARS_FOR_FAST_READY
+                    has_closed_html and stable_html_polls >= 1 and text_len >= MIN_TEXT_CHARS_FOR_FAST_READY
                 )
                 fast_ready_elapsed = (
                     first_html_seen_at is not None
                     and (time.monotonic() - first_html_seen_at) >= FAST_READY_AFTER_FIRST_HTML_SECONDS
                     and text_len >= MIN_TEXT_CHARS_FOR_FAST_READY
                 )
-                ready = (
-                    not challenge
-                    and not blocked
-                    and (
-                        html_bytes >= settings.min_html_bytes
-                        or small_page_ready
-                        or fast_ready_elapsed
-                    )
+                ready = not challenge and not blocked and (
+                    html_bytes >= settings.min_html_bytes or small_page_ready or fast_ready_elapsed
                 )
 
             if ready:
@@ -403,8 +374,7 @@ async def fetch_html(settings: FetchSettings) -> tuple[FetchResult, str]:
                 if settings.settle_seconds > 0:
                     await tab.sleep(settings.settle_seconds)
                 should_refresh_after_settle = (
-                    settings.wait_selector is not None
-                    or html_bytes < POST_READY_REFRESH_MAX_BYTES
+                    settings.wait_selector is not None or html_bytes < POST_READY_REFRESH_MAX_BYTES
                 )
                 if should_refresh_after_settle:
                     try:
@@ -476,12 +446,6 @@ async def fetch_html(settings: FetchSettings) -> tuple[FetchResult, str]:
         return result, html
 
     finally:
-        if context_tab is not None:
-            try:
-                await context_tab.close()
-            except Exception:
-                LOGGER.debug("Не удалось закрыть контекст браузера", exc_info=True)
-
         if browser is not None:
             try:
                 with contextlib.redirect_stdout(io.StringIO()):
@@ -492,7 +456,7 @@ async def fetch_html(settings: FetchSettings) -> tuple[FetchResult, str]:
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     """Разбирает аргументы командной строки для утилиты получения HTML."""
-    parser = argparse.ArgumentParser(description="Получение итогового HTML через nodriver")
+    parser = argparse.ArgumentParser(description="Получение итогового HTML через локальный Chromium")
     parser.add_argument("url", nargs="?", help="Целевой URL")
     parser.add_argument("--stdin-json", action="store_true", help="Прочитать JSON-конфиг из stdin")
     parser.add_argument("--warmup-url", help="Опциональный URL для прогрева перед целевым")
@@ -505,13 +469,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--no-sandbox", action="store_true", help="Передать sandbox=False в nodriver")
     parser.add_argument("--browser-executable-path", help="Явный путь к браузеру")
     parser.add_argument("--user-data-dir", help="Каталог постоянного браузерного профиля")
-    parser.add_argument("--connect-host", help="Хост уже запущенного браузера с debug-портом")
-    parser.add_argument("--connect-port", type=int, help="Порт уже запущенного браузера с debug-интерфейсом")
-    parser.add_argument("--no-context", action="store_true", help="Отключить browser.create_context()")
-    parser.add_argument(
-        "--context-proxy-server",
-        help="Прокси для browser context, например http://host:port или список через запятую",
-    )
+    parser.add_argument("--proxy-server", help="Прокси на уровне Chromium, например socks5://user:pass@host:port")
     parser.add_argument(
         "--no-default-browser-flags",
         action="store_true",
@@ -553,15 +511,19 @@ def _build_settings(args: argparse.Namespace) -> FetchSettings:
         safe_url = re.sub(r"[^a-zA-Z0-9]+", "-", url)[:64].strip("-") or "page"
         save_html = str((Path("output") / f"{stamp}-{safe_url}.html").resolve())
 
-    use_context = data.get("use_context")
-    if use_context is None:
-        use_context = not bool(data.get("no_context", args.no_context))
-
     use_default_browser_flags = data.get("use_default_browser_flags")
     if use_default_browser_flags is None:
         use_default_browser_flags = not bool(
             data.get("no_default_browser_flags", args.no_default_browser_flags)
         )
+
+    browser_args = data.get("browser_args")
+    if browser_args is None:
+        browser_args = list(args.browser_arg)
+    elif isinstance(browser_args, str):
+        browser_args = [browser_args]
+    else:
+        browser_args = list(browser_args)
 
     return FetchSettings(
         url=url,
@@ -575,12 +537,9 @@ def _build_settings(args: argparse.Namespace) -> FetchSettings:
         sandbox=not bool(data.get("no_sandbox", args.no_sandbox)),
         browser_executable_path=data.get("browser_executable_path") or args.browser_executable_path,
         user_data_dir=data.get("user_data_dir") or args.user_data_dir,
-        connect_host=data.get("connect_host") or args.connect_host,
-        connect_port=(int(data["connect_port"]) if data.get("connect_port") else args.connect_port),
-        use_context=bool(use_context),
-        context_proxy_server=data.get("context_proxy_server") or args.context_proxy_server,
+        proxy_server=data.get("proxy_server") or args.proxy_server,
         use_default_browser_flags=bool(use_default_browser_flags),
-        browser_args=list(data.get("browser_args") or args.browser_arg),
+        browser_args=browser_args,
         save_html=save_html,
         output_format=str(data.get("output_format") or args.output_format),
         embed_html=bool(data.get("embed_html", args.embed_html)),

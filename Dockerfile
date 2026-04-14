@@ -13,6 +13,7 @@ RUN apt-get update \
        git \
        ca-certificates \
        tzdata \
+       chromium \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
