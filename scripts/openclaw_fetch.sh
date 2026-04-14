@@ -9,6 +9,22 @@ fi
 
 URL="$1"
 OUTPUT_PATH="${2:-/app/output/result.html}"
+DEFAULT_SECRET_FILE="$HOME/.openclaw/secrets/agent-browser-fetcher.env"
+LEGACY_SECRET_FILE="$HOME/.openclaw/secrets/ozon-proxy.env"
+SECRET_FILE="${FETCHER_SECRET_FILE:-$DEFAULT_SECRET_FILE}"
+
+if [[ -f "$SECRET_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$SECRET_FILE"
+fi
+
+if [[ -z "${BROWSER_PROXY:-}" && -f "$LEGACY_SECRET_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$LEGACY_SECRET_FILE"
+  if [[ -z "${BROWSER_PROXY:-}" && -n "${OZON_PROXY_URL:-}" ]]; then
+    BROWSER_PROXY="$OZON_PROXY_URL"
+  fi
+fi
 
 if ! command -v uv >/dev/null 2>&1; then
   echo "uv not found" >&2

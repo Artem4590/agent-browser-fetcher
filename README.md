@@ -13,13 +13,82 @@
 
 Fetcher **не** предназначен для сложной UI-автоматизации и не заменяет полноценный browser automation.
 
-## Основная схема
+## Операционный контракт для переносимости
+
+Чтобы другой OpenClaw-агент использовал fetcher предсказуемо, зафиксированы четыре слоя:
+
+1. **Repo** — код, wrapper, README и SKILL.md лежат в репозитории.
+2. **Environment contract** — ожидаются `uv`, Chromium/Chrome и опциональные runtime overrides через env.
+3. **Secrets outside git** — прокси и локальные override-параметры хранятся вне репозитория.
+4. **One recommended run path** — запуск через один wrapper/CLI без attach-mode и старой browser-runtime схемы.
+
+## Рекомендуемая схема запуска
 
 Поднять собственный Chromium, при необходимости дать ему прокси, открыть URL, дождаться готовности страницы и вернуть:
 
 - HTML-файл;
 - JSON-результат (`success`, `blocked`, `error`);
 - сетевую диагностику (`redirect_hops`, `status_counter`).
+
+## Secret convention
+
+Рекомендуемый секретный файл вне git:
+
+```bash
+~/.openclaw/secrets/agent-browser-fetcher.env
+```
+
+Права:
+
+```bash
+chmod 700 ~/.openclaw/secrets
+chmod 600 ~/.openclaw/secrets/agent-browser-fetcher.env
+```
+
+Поддерживаемые переменные в этом файле:
+
+```bash
+BROWSER_PROXY='socks5://user:pass@host:port'
+BROWSER_EXECUTABLE_PATH='/home/openclaw/.local/bin/openclaw-chrome'
+BROWSER_USER_DATA_DIR='/tmp/agent-browser-fetcher/browser-profile'
+FETCHER_NO_SANDBOX=1
+FETCHER_WARMUP_URL='https://example.com/'
+```
+
+Wrapper также умеет читать legacy-файл:
+
+```bash
+~/.openclaw/secrets/ozon-proxy.env
+```
+
+и маппить `OZON_PROXY_URL -> BROWSER_PROXY`.
+
+## Bootstrap для OpenClaw
+
+```bash
+cd skills/agent-browser-fetcher
+scripts/bootstrap_openclaw.sh
+```
+
+Он:
+- создаёт `~/.openclaw/secrets/agent-browser-fetcher.env`, если файла ещё нет;
+- выставляет права `700/600`;
+- делает `uv sync`;
+- печатает следующие шаги.
+
+## Проверка окружения
+
+```bash
+cd skills/agent-browser-fetcher
+scripts/check_env.sh
+```
+
+Проверяет:
+- `uv`;
+- `python3`;
+- наличие Chromium/Chrome;
+- наличие secret file;
+- что CLI fetcher вообще стартует.
 
 ## Быстрый старт
 
@@ -65,11 +134,13 @@ uv run python -m app.fetch_html "https://example.com" \
 ## Shell-обёртка для OpenClaw
 
 ```bash
+cd skills/agent-browser-fetcher
 scripts/openclaw_fetch.sh "https://example.com" "/tmp/page.html"
 ```
 
 Полезные env-переменные для обёртки:
 
+- `FETCHER_SECRET_FILE`
 - `BROWSER_EXECUTABLE_PATH`
 - `BROWSER_USER_DATA_DIR`
 - `BROWSER_PROXY`

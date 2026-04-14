@@ -33,6 +33,51 @@ This fetcher has one supported execution model:
 
 Attach-to-existing-browser and context-level proxy flows are intentionally out of scope.
 
+# Portable OpenClaw Contract
+
+For reproducible use by another OpenClaw agent, assume these four layers:
+
+1. Repository code in `{baseDir}`.
+2. Runtime contract: `uv`, Chromium/Chrome, writable output path.
+3. Secrets live outside git.
+4. One recommended run path through wrapper or direct CLI.
+
+## Preferred secret convention
+
+Prefer one secret file outside git:
+
+```bash
+~/.openclaw/secrets/agent-browser-fetcher.env
+```
+
+Expected optional variables:
+
+```bash
+BROWSER_PROXY='socks5://user:pass@host:port'
+BROWSER_EXECUTABLE_PATH='/path/to/chrome'
+BROWSER_USER_DATA_DIR='/tmp/agent-browser-fetcher/browser-profile'
+FETCHER_NO_SANDBOX=1
+FETCHER_WARMUP_URL='https://example.com/'
+```
+
+Legacy fallback supported by wrapper only:
+
+```bash
+~/.openclaw/secrets/ozon-proxy.env
+```
+
+If present, `OZON_PROXY_URL` is mapped to `BROWSER_PROXY`.
+
+## Bootstrap / validation
+
+Before first use on a new machine or by a new agent:
+
+```bash
+cd "{baseDir}"
+scripts/bootstrap_openclaw.sh
+scripts/check_env.sh
+```
+
 # Preferred Execution Path
 
 Start with the simplest working command.
@@ -56,12 +101,17 @@ uv run python -m app.fetch_html "$URL" \
   --save-html "$HTML_PATH"
 ```
 
-Optional shell wrapper:
+Recommended wrapper path for OpenClaw:
 
 ```bash
 cd "{baseDir}"
 scripts/openclaw_fetch.sh "$URL" "$HTML_PATH"
 ```
+
+The wrapper auto-loads, in order:
+- `FETCHER_SECRET_FILE`
+- `~/.openclaw/secrets/agent-browser-fetcher.env`
+- `~/.openclaw/secrets/ozon-proxy.env` (legacy fallback)
 
 # Useful Options
 
