@@ -43,9 +43,17 @@ BLOCK_TITLE_MARKERS = (
     "request blocked",
 )
 
+BROWSER_ERROR_MARKERS = (
+    'id="main-frame-error"',
+    "this site can’t be reached",
+    "this site can't be reached",
+    "the webpage at ",
+)
+
 TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 SCRIPT_STYLE_RE = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
 HTML_TAG_RE = re.compile(r"<[^>]+>")
+BROWSER_ERROR_CODE_RE = re.compile(r"\b(ERR_[A-Z0-9_]+)\b")
 
 FAST_READY_AFTER_FIRST_HTML_SECONDS = 1.5
 MIN_TEXT_CHARS_FOR_FAST_READY = 80
@@ -110,6 +118,7 @@ class FetchResult:
     ok: bool
     blocked: bool
     challenge_detected: bool
+    browser_error_code: str | None
     requested_url: str
     final_url: str
     html_bytes: int
@@ -170,6 +179,18 @@ def _check_markers(html: str) -> tuple[bool, bool]:
     return challenge, blocked
 
 
+def _detect_browser_error_code(html: str) -> str | None:
+    lower = html.lower()
+    if not any(marker in lower for marker in BROWSER_ERROR_MARKERS):
+        return None
+    match = BROWSER_ERROR_CODE_RE.search(html)
+    if match:
+        return match.group(1)
+    if 'id="main-frame-error"' in lower:
+        return "BROWSER_MAIN_FRAME_ERROR"
+    return "BROWSER_ERROR_PAGE"
+
+
 def _as_iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=UTC).isoformat()
 
@@ -214,6 +235,8 @@ def _to_openclaw_payload(result: FetchResult, html: str | None) -> dict[str, Any
             if status == "success"
             else "Доступ к целевому URL ограничен антиботом"
             if status == "blocked"
+            else f"Ошибка браузера при загрузке страницы ({result.browser_error_code})"
+            if result.browser_error_code
             else "Ошибка получения HTML"
         ),
         "artifacts": artifacts,
@@ -242,6 +265,7 @@ async def fetch_html(settings: FetchSettings) -> tuple[FetchResult, str]:
     final_url = settings.url
     challenge_detected = False
     blocked = False
+    browser_error_code: str | None = None
     rr_seen = False
 
     try:
@@ -336,6 +360,7 @@ async def fetch_html(settings: FetchSettings) -> tuple[FetchResult, str]:
             last_html_bytes = html_bytes
 
             challenge, blocked_now = _check_markers(html)
+            browser_error_code = _detect_browser_error_code(html)
             challenge_detected = challenge
             blocked = blocked_now
 
@@ -347,7 +372,7 @@ async def fetch_html(settings: FetchSettings) -> tuple[FetchResult, str]:
                     elem = await tab.select(settings.wait_selector, timeout=0)
                 except Exception:
                     elem = None
-                ready = elem is not None and not blocked and not challenge
+                ready = elem is not None and not blocked and not challenge and browser_error_code is None
             else:
                 has_closed_html = "</html" in html.lower()
                 text_len = _visible_text_len(html)
@@ -359,7 +384,7 @@ async def fetch_html(settings: FetchSettings) -> tuple[FetchResult, str]:
                     and (time.monotonic() - first_html_seen_at) >= FAST_READY_AFTER_FIRST_HTML_SECONDS
                     and text_len >= MIN_TEXT_CHARS_FOR_FAST_READY
                 )
-                ready = not challenge and not blocked and (
+                ready = browser_error_code is None and not challenge and not blocked and (
                     html_bytes >= settings.min_html_bytes or small_page_ready or fast_ready_elapsed
                 )
 
@@ -387,13 +412,20 @@ async def fetch_html(settings: FetchSettings) -> tuple[FetchResult, str]:
             raise RuntimeError("Не удалось получить HTML")
 
         challenge, blocked_now = _check_markers(html)
+        browser_error_code = _detect_browser_error_code(html)
         challenge_detected = challenge
         blocked = blocked_now
         if rr_seen and (challenge or blocked or len(html.encode("utf-8")) < settings.min_html_bytes):
             challenge_detected = True
 
-        ok = bool(html) and not blocked and not challenge_detected
-        if settings.wait_selector and bool(html) and not blocked:
+        ok = bool(html) and browser_error_code is None and not blocked and not challenge_detected
+        if (
+            settings.wait_selector
+            and bool(html)
+            and browser_error_code is None
+            and not blocked
+            and not challenge_detected
+        ):
             ok = True
 
         finished = time.time()
@@ -402,12 +434,14 @@ async def fetch_html(settings: FetchSettings) -> tuple[FetchResult, str]:
             ok=ok,
             blocked=blocked,
             challenge_detected=challenge_detected,
+            browser_error_code=browser_error_code,
             requested_url=settings.url,
             final_url=final_url,
             html_bytes=len(html.encode("utf-8")),
             started_at=_as_iso(started),
             finished_at=_as_iso(finished),
             duration_ms=int((finished - started) * 1000),
+            error=f"BrowserError: {browser_error_code}" if browser_error_code else None,
             redirect_hops=redirect_hops,
             response_count=len(responses),
             status_counter=dict(status_counter),
@@ -427,6 +461,7 @@ async def fetch_html(settings: FetchSettings) -> tuple[FetchResult, str]:
             ok=False,
             blocked=blocked,
             challenge_detected=challenge_detected,
+            browser_error_code=browser_error_code,
             requested_url=settings.url,
             final_url=final_url,
             html_bytes=len(html.encode("utf-8")) if html else 0,
